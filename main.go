@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
 
@@ -25,12 +24,80 @@ type User struct {
 	PASSWORD string `json:"password"`
 }
 
+type Post struct {
+	USERID  string `json:"userId"`
+	MESSAGE string `json:"message"`
+	DATE    string `json:"date"`
+}
+
+type PostGet struct {
+	USERNAME string `json:"username"`
+	MESSAGE  string `json:"message"`
+	DATE     string `json:"date"`
+}
+
 type Claims struct {
 	ID string
 	jwt.StandardClaims
 }
 
-var posts []User
+func main() {
+	router := mux.NewRouter()
+	router.HandleFunc("/login", login).Methods("POST")
+	createPost := Chain(createPost, loggingMiddleware())
+	router.HandleFunc("/posts", createPost).Methods("POST")
+	getPost := Chain(getPost, loggingMiddleware())
+	router.HandleFunc("/posts", getPost).Methods("GET")
+	simpleGetPost := Chain(simpleGetPost, loggingMiddleware())
+	router.HandleFunc("/posts/{id}", simpleGetPost).Methods("GET")
+	// router.HandleFunc("/posts/{id}", updatePost).Methods("PUT")
+	// router.HandleFunc("/posts/{id}", deletePost).Methods("DELETE")
+	http.ListenAndServe(":8000", router)
+}
+
+func createPost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	date := date()
+	lastPostCount := mux.Vars(r)["count"]
+	var post Post
+	_ = json.NewDecoder(r.Body).Decode(&post)
+
+	stm, err := database.Prepare("INSERT INTO post (user_id, post_message, post_date) VALUES (?, ?, ?)")
+	if err != nil {
+		fmt.Print(err)
+		return
+	}
+	stm.Exec(userId, post.MESSAGE, date)
+	count := postCount()
+	fmt.Printf(count)
+	fmt.Printf(lastPostCount)
+}
+
+func simpleGetPost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var posts PostGet
+	postId := mux.Vars(r)["id"]
+	rows, _ := database.Query("SELECT post_message, post_date,username FROM post INNER JOIN user ON post.user_id = user.id WHERE post.id=?", postId)
+
+	for rows.Next() {
+		rows.Scan(&posts.MESSAGE, &posts.DATE, &posts.USERNAME)
+	}
+	json.NewEncoder(w).Encode(posts)
+}
+
+func getPost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var postTemp PostGet
+	var posts []PostGet
+	rows, _ := database.Query("SELECT post_message, post_date,username FROM post INNER JOIN user ON post.user_id = user.id")
+
+	for rows.Next() {
+		rows.Scan(&postTemp.MESSAGE, &postTemp.DATE, &postTemp.USERNAME)
+		posts = append(posts, postTemp)
+
+	}
+	json.NewEncoder(w).Encode(posts)
+}
 
 func login(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -53,7 +120,7 @@ func Chain(f http.HandlerFunc, middlewares ...Middleware) http.HandlerFunc {
 }
 
 func getToken(w http.ResponseWriter, id string) {
-	expirationTime := time.Now().Add(5 * time.Minute)
+	expirationTime := time.Now().Add(50 * time.Hour)
 	claims := &Claims{
 		ID: id,
 		StandardClaims: jwt.StandardClaims{
@@ -64,7 +131,7 @@ func getToken(w http.ResponseWriter, id string) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 
 	tokenString, err := token.SignedString(jwtKey)
-
+	fmt.Print(tokenString)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -81,24 +148,21 @@ func loggingMiddleware() Middleware {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			c, err := r.Cookie("token")
-			fmt.Print("1")
 			if err != nil {
 				if err == http.ErrNoCookie {
-					w.WriteHeader(http.StatusUnauthorized)
+					http.Error(w, "StatusUnauthorized", http.StatusUnauthorized)
 					return
 				}
-				w.WriteHeader(http.StatusBadRequest)
+				http.Error(w, "StatusBadRequest", http.StatusBadRequest)
 				return
 			}
 
 			tknStr := c.Value
 
 			claims := &Claims{}
-
 			tkn, err := jwt.ParseWithClaims(tknStr, claims, func(token *jwt.Token) (interface{}, error) {
 				return jwtKey, nil
 			})
-			fmt.Print("2")
 			if err != nil {
 				if err == jwt.ErrSignatureInvalid {
 					http.Error(w, "StatusUnauthorized", http.StatusUnauthorized)
@@ -107,56 +171,19 @@ func loggingMiddleware() Middleware {
 				http.Error(w, "StatusBadRequest", http.StatusBadRequest)
 				return
 			}
-			fmt.Print("3")
 			if !tkn.Valid {
-				w.WriteHeader(http.StatusUnauthorized)
+				http.Error(w, "StatusUnauthorized", http.StatusUnauthorized)
 				return
 			}
 
 			userId = claims.ID
-			fmt.Print("4")
-			// Do stuff here
 			//http.Redirect(w, r, fmt.Sprintf("https://%s%s", r.Host, "/login"), 302)
-			log.Println(r.RequestURI)
-			// Call the next handler, which can be another middleware in the chain, or the final handler.
+
 			next.ServeHTTP(w, r)
 		}
 	}
 }
 
-func main() {
-	router := mux.NewRouter()
-
-	// train := Chain(, loggingMiddleware())
-	// router.HandleFunc("/token", train).Methods("GET")
-	router.HandleFunc("/login", login).Methods("POST")
-	// router.HandleFunc("/posts", createPost).Methods("POST")
-	// router.HandleFunc("/posts/{id}", getPost).Methods("GET")
-	// router.HandleFunc("/posts/{id}", updatePost).Methods("PUT")
-	// router.HandleFunc("/posts/{id}", deletePost).Methods("DELETE")
-	http.ListenAndServe(":8000", router)
-}
-
-// func createPost(w http.ResponseWriter, r *http.Request) {
-// 	w.Header().Set("Content-Type", "application/json")
-// 	var post Post
-// 	_ = json.NewDecoder(r.Body).Decode(&post)
-// 	fmt.Println(post)
-// 	post.ID = strconv.Itoa(rand.Intn(1000000))
-// 	posts = append(posts, post)
-// 	json.NewEncoder(w).Encode(&post)
-// }
-// func getPost(w http.ResponseWriter, r *http.Request) {
-// 	w.Header().Set("Content-Type", "application/json")
-// 	params := mux.Vars(r)
-// 	for _, item := range posts {
-// 		if item.ID == params["id"] {
-// 			json.NewEncoder(w).Encode(item)
-// 			return
-// 		}
-// 	}
-// 	json.NewEncoder(w).Encode(&Post{})
-// }
 // func updatePost(w http.ResponseWriter, r *http.Request) {
 // 	w.Header().Set("Content-Type", "application/json")
 // 	params := mux.Vars(r)
