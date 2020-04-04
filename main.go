@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
@@ -28,6 +29,7 @@ type Post struct {
 	USERID  string `json:"userId"`
 	MESSAGE string `json:"message"`
 	DATE    string `json:"date"`
+	COUNT   string `json:"count"`
 }
 
 type PostGet struct {
@@ -44,22 +46,56 @@ type Claims struct {
 func main() {
 	router := mux.NewRouter()
 	router.HandleFunc("/login", login).Methods("POST")
+
 	createPost := Chain(createPost, loggingMiddleware())
 	router.HandleFunc("/posts", createPost).Methods("POST")
+
 	getPost := Chain(getPost, loggingMiddleware())
 	router.HandleFunc("/posts", getPost).Methods("GET")
+
 	simpleGetPost := Chain(simpleGetPost, loggingMiddleware())
 	router.HandleFunc("/posts/{id}", simpleGetPost).Methods("GET")
-	// router.HandleFunc("/posts/{id}", updatePost).Methods("PUT")
-	// router.HandleFunc("/posts/{id}", deletePost).Methods("DELETE")
+
+	updatePost := Chain(updatePost, loggingMiddleware())
+	router.HandleFunc("/posts/{id}", updatePost).Methods("PUT")
+
+	deletePost := Chain(deletePost, loggingMiddleware())
+	router.HandleFunc("/posts/{id}", deletePost).Methods("DELETE")
+
 	http.ListenAndServe(":8000", router)
+}
+
+func deletePost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	postId := mux.Vars(r)["id"]
+	smt, err := database.Prepare("DELETE FROM post WHERE id=?")
+	if err != nil {
+		fmt.Print(err)
+		return
+	}
+	smt.Exec(postId)
+	w.WriteHeader(http.StatusOK)
+}
+
+func updatePost(w http.ResponseWriter, r *http.Request) {
+	var post Post
+	postId := mux.Vars(r)["id"]
+	_ = json.NewDecoder(r.Body).Decode(&post)
+	smt, err := database.Prepare("UPDATE post SET post_message = ? WHERE post.user_id=? AND id =?;")
+	if err != nil {
+		fmt.Print(err)
+		return
+	}
+	smt.Exec(post.MESSAGE, userId, postId)
+	w.WriteHeader(http.StatusOK)
 }
 
 func createPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	date := date()
-	lastPostCount := mux.Vars(r)["count"]
 	var post Post
+	var postTemp PostGet
+	var posts []PostGet
 	_ = json.NewDecoder(r.Body).Decode(&post)
 
 	stm, err := database.Prepare("INSERT INTO post (user_id, post_message, post_date) VALUES (?, ?, ?)")
@@ -68,9 +104,24 @@ func createPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stm.Exec(userId, post.MESSAGE, date)
-	count := postCount()
-	fmt.Printf(count)
-	fmt.Printf(lastPostCount)
+
+	newPostCount, _ := strconv.ParseInt(postCount(), 10, 64)
+	lastPostCount, _ := strconv.ParseInt(post.COUNT, 10, 64)
+	count := newPostCount - lastPostCount
+	rows, err := database.Query("SELECT post_message, post_date,username FROM post INNER JOIN user ON post.user_id = user.id ORDER BY post.id DESC LIMIT ?", count)
+	if err != nil {
+		fmt.Print(err)
+		return
+	}
+
+	for rows.Next() {
+		rows.Scan(&postTemp.MESSAGE, &postTemp.DATE, &postTemp.USERNAME)
+		posts = append(posts, postTemp)
+
+	}
+
+	json.NewEncoder(w).Encode(posts)
+
 }
 
 func simpleGetPost(w http.ResponseWriter, r *http.Request) {
@@ -184,30 +235,23 @@ func loggingMiddleware() Middleware {
 	}
 }
 
-// func updatePost(w http.ResponseWriter, r *http.Request) {
-// 	w.Header().Set("Content-Type", "application/json")
-// 	params := mux.Vars(r)
-// 	for index, item := range posts {
-// 		if item.ID == params["id"] {
-// 			posts = append(posts[:index], posts[index+1:]...)
-// 			var post Post
-// 			_ = json.NewDecoder(r.Body).Decode(&post)
-// 			post.ID = params["id"]
-// 			posts = append(posts, post)
-// 			json.NewEncoder(w).Encode(&post)
-// 			return
-// 		}
-// 	}
-// 	json.NewEncoder(w).Encode(posts)
-// }
-// func deletePost(w http.ResponseWriter, r *http.Request) {
-// 	w.Header().Set("Content-Type", "application/json")
-// 	params := mux.Vars(r)
-// 	for index, item := range posts {
-// 		if item.ID == params["id"] {
-// 			posts = append(posts[:index], posts[index+1:]...)
-// 			break
-// 		}
-// 	}
-// 	json.NewEncoder(w).Encode(posts)
-// }
+func date() string {
+	t := time.Now()
+	date := fmt.Sprintf("%d-%02d-%02d %02d:%02d:%02d",
+		t.Year(), t.Month(), t.Day(),
+		t.Hour(), t.Minute(), t.Second())
+	return date
+}
+
+func postCount() string {
+	var count string
+	row, err := database.Query("SELECT COUNT(*) count FROM post")
+	if err != nil {
+		fmt.Print(err)
+		return ""
+	}
+	for row.Next() {
+		row.Scan(&count)
+	}
+	return count
+}
