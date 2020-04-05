@@ -62,7 +62,11 @@ func main() {
 	deletePost := Chain(deletePost, loggingMiddleware())
 	router.HandleFunc("/posts/{id}", deletePost).Methods("DELETE")
 
-	http.ListenAndServe(":8000", router)
+	// headersOk := handlers.AllowedHeaders([]string{"X-Requested-With"})
+	// originsOk := handlers.AllowedOrigins([]string{os.Getenv("ORIGIN_ALLOWED")})
+	// methodsOk := handlers.AllowedMethods([]string{"GET", "HEAD", "POST", "PUT", "OPTIONS"})
+
+	http.ListenAndServe(":8000", (router))
 }
 
 func deletePost(w http.ResponseWriter, r *http.Request) {
@@ -78,6 +82,7 @@ func deletePost(w http.ResponseWriter, r *http.Request) {
 }
 
 func updatePost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	var post Post
 	postId := mux.Vars(r)["id"]
 	_ = json.NewDecoder(r.Body).Decode(&post)
@@ -138,6 +143,9 @@ func simpleGetPost(w http.ResponseWriter, r *http.Request) {
 
 func getPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET")
+	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token")
 	var postTemp PostGet
 	var posts []PostGet
 	rows, _ := database.Query("SELECT post_message, post_date,username FROM post INNER JOIN user ON post.user_id = user.id")
@@ -145,22 +153,25 @@ func getPost(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		rows.Scan(&postTemp.MESSAGE, &postTemp.DATE, &postTemp.USERNAME)
 		posts = append(posts, postTemp)
-
 	}
 	json.NewEncoder(w).Encode(posts)
 }
 
 func login(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST")
+	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
 	var user User
 	var id string
 	_ = json.NewDecoder(r.Body).Decode(&user)
+	fmt.Println(user)
 	rows, _ := database.Query("SELECT id FROM user WHERE username=? AND password=?", user.USERNAME, user.PASSWORD)
-
 	for rows.Next() {
 		rows.Scan(&id)
 		getToken(w, id)
 	}
+
 }
 
 func Chain(f http.HandlerFunc, middlewares ...Middleware) http.HandlerFunc {
@@ -178,16 +189,21 @@ func getToken(w http.ResponseWriter, id string) {
 			ExpiresAt: expirationTime.Unix(),
 		},
 	}
-
+	fmt.Println(id)
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 
 	tokenString, err := token.SignedString(jwtKey)
-	fmt.Print(tokenString)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-
+	fmt.Println(tokenString)
+	smt, err := database.Prepare("UPDATE user SET token=? WHERE id=?")
+	if err != nil {
+		fmt.Print(err)
+		return
+	}
+	smt.Exec(tokenString, id)
 	http.SetCookie(w, &http.Cookie{
 		Name:    "token",
 		Value:   tokenString,
